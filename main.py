@@ -32,14 +32,15 @@ def otimizar_imagem_universal(imagem_pil):
         base.paste(img, (0, 0), img)
         imagem_final = base.convert("L")
     
-    imagem_binaria = imagem_final.point(lambda x: 0 if x < 140 else 255, '1')
+    # 🌟 CORREÇÃO CRÍTICA: Alterado de '1' para 'L' (Grayscale) para evitar o Segmentation Fault no Linux
+    imagem_binaria = imagem_final.point(lambda x: 0 if x < 140 else 255, 'L')
     
-    # Salva temporariamente para o vtracer ler
-    caminho_temp = "temp_interface_processado.png"
+    # Força caminho absoluto para evitar problemas de permissão na nuvem
+    caminho_temp = os.path.abspath("temp_interface_processado.png")
     imagem_binaria.save(caminho_temp)
     return caminho_temp
 
-# --- INTERFACE GRAPHICA ---
+# --- INTERFACE GRÁFICA ---
 st.title("🖨️ Conversor SVG Inteligente para Impressão 3D")
 st.write("Transforme qualquer logotipo ou texto em um SVG limpo, sem blocos quadrados de fundo.")
 
@@ -47,10 +48,8 @@ st.write("Transforme qualquer logotipo ou texto em um SVG limpo, sem blocos quad
 arquivo_upload = st.file_uploader("Arraste ou selecione uma imagem (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
 
 if arquivo_upload is not None:
-    # Abre a imagem usando PIL
     imagem_original = Image.open(arquivo_upload)
     
-    # Cria duas colunas para mostrar o preview e o resultado
     col1, col2 = st.columns(2)
     
     with col1:
@@ -59,16 +58,15 @@ if arquivo_upload is not None:
         
     with col2:
         st.subheader("Processamento")
-        # Botão para disparar a conversão
         if st.button("🚀 Converter para SVG", use_container_width=True):
             with st.spinner("Vetorizando contornos..."):
                 try:
                     # 1. Processa a imagem na memória
                     imagem_temporaria = otimizar_imagem_universal(imagem_original)
                     
-                    # 2. Define caminhos de saída
+                    # 2. Define caminhos de saída absolutos
                     nome_original = os.path.splitext(arquivo_upload.name)[0]
-                    caminho_svg_saida = f"{nome_original}_pronto_3d.svg"
+                    caminho_svg_saida = os.path.abspath(f"{nome_original}_pronto_3d.svg")
                     
                     # 3. Executa a vetorização do vtracer
                     vtracer.convert_image_to_svg_py(
@@ -80,22 +78,22 @@ if arquivo_upload is not None:
                         corner_threshold=60  
                     )
                     
-                    # Lendo o arquivo gerado para disponibilizar para o usuário
+                    # Lendo o arquivo gerado
                     with open(caminho_svg_saida, "rb") as f:
                         dados_svg = f.read()
                     
                     st.success("✅ SVG Gerado com Sucesso!")
                     
-                    # Botão nativo de download do Streamlit
+                    # Botão nativo de download
                     st.download_button(
                         label="📥 Baixar Arquivo SVG",
                         data=dados_svg,
-                        file_name=caminho_svg_saida,
+                        file_name=os.path.basename(caminho_svg_saida),
                         mime="image/svg+xml",
                         use_container_width=True
                     )
                     
-                    # Limpeza dos arquivos locais criados durante o processo
+                    # Limpeza dos arquivos locais
                     if os.path.exists(imagem_temporaria):
                         os.remove(imagem_temporaria)
                     if os.path.exists(caminho_svg_saida):
