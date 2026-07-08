@@ -1,3 +1,5 @@
 streamlit
 vtracer
-Pillow
+pillow
+numpy
+opencv-python-headless
