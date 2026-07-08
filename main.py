@@ -3,6 +3,8 @@ import vtracer
 import os
 import cv2
 import numpy as np
+import base64
+import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 
 # Configuração da página do Streamlit
@@ -42,11 +44,9 @@ def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
     
     if thickness > 0:
         kernel = np.ones((thickness, thickness), np.uint8)
-        # Erodir o fundo branco faz as linhas pretas expandirem (engrossarem)
         img_np = cv2.erode(img_np, kernel, iterations=1)
     elif thickness < 0:
         kernel = np.ones((abs(thickness), abs(thickness)), np.uint8)
-        # Dilatar o fundo branco faz as linhas pretas reduzirem (afinarem)
         img_np = cv2.dilate(img_np, kernel, iterations=1)
     
     # Força caminho absoluto para salvar a imagem de transição limpa
@@ -60,7 +60,7 @@ st.title("🖨️ Conversor SVG Inteligente para Impressão 3D")
 st.write("Transforme qualquer logotipo ou texto em um SVG limpo, sem blocos quadrados de fundo.")
 
 # Componente de Upload de arquivo
-arquivo_upload = st.file_uploader("Arraste ou selecione uma imagem (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
+arquivo_upload = st.file_uploader("Arraste ou seleciona uma imagem (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
 
 if arquivo_upload is not None:
     imagem_original = Image.open(arquivo_upload)
@@ -92,8 +92,80 @@ if arquivo_upload is not None:
         
     with col2:
         st.subheader("Prévia do Traço")
-        # Exibe em tempo real o traço binarizado e modificado
-        st.image(img_preview, caption="Como o Bambu Studio enxergará as linhas", use_container_width=True)
+        
+        # 🌟 LOGICA DA LUPA (CONVERSÃO BASE64 + HTML/JS INJETADO)
+        _, buffer = cv2.imencode('.png', img_preview)
+        img_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        html_zoom_component = f"""
+        <div id="canvas-container" style="
+            overflow: hidden; 
+            width: 100%; 
+            height: 380px; 
+            border: 1px dashed #4A4A4A; 
+            border-radius: 6px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            background: #1A1A1A; 
+            cursor: grab;
+            user-select: none;
+        ">
+            <img id="bambu-preview" src="data:image/png;base64,{img_base64}" style="
+                transform: translate(0px, 0px) scale(1); 
+                transform-origin: center center; 
+                transition: transform 0.05s ease-out; 
+                max-width: 100%; 
+                max-height: 100%; 
+                object-fit: contain;
+            " />
+        </div>
+        
+        <script>
+            const container = document.getElementById('canvas-container');
+            const img = document.getElementById('bambu-preview');
+            let scale = 1;
+            let isDragging = false;
+            let startX = 0, startY = 0;
+            let translateX = 0, translateY = 0;
+
+            // 1. Zoom Interativo por Rolagem do Mouse (Scroll Wheel)
+            container.addEventListener('wheel', (e) => {{
+                e.preventDefault();
+                const intensidadeZoom = 0.15;
+                if (e.deltaY < 0) {{
+                    scale += intensidadeZoom; // Zoom In
+                }} else {{
+                    scale -= intensidadeZoom; // Zoom Out
+                }}
+                scale = Math.min(Math.max(0.5, scale), 15); // Trava o zoom entre 0.5x e 15x
+                img.style.transform = `translate(${{translateX}}px, ${{translateY}}px) scale(${{scale}})`;
+            }}, {{ passive: false }});
+
+            // 2. Sistema de Pan (Clique e arraste para navegar no desenho ampliado)
+            container.addEventListener('mousedown', (e) => {{
+                isDragging = true;
+                container.style.cursor = 'grabbing';
+                startX = e.clientX - translateX;
+                startY = e.clientY - translateY;
+            }});
+
+            window.addEventListener('mouseup', () => {{
+                isDragging = false;
+                container.style.cursor = 'grab';
+            }});
+
+            container.addEventListener('mousemove', (e) => {{
+                if (!isDragging) return;
+                e.preventDefault();
+                translateX = e.clientX - startX;
+                translateY = e.clientY - startY;
+                img.style.transform = `translate(${{translateX}}px, ${{translateY}}px) scale(${{scale}})`;
+            }});
+        </script>
+        """
+        # Renderiza a lousa interativa com altura controlada
+        components.html(html_zoom_component, height=390)
         
         if st.button("🚀 Converter para SVG", use_container_width=True):
             with st.spinner("Vetorizando contornos..."):
@@ -108,7 +180,7 @@ if arquivo_upload is not None:
                         caminho_svg_saida, 
                         colormode='binary',
                         mode='spline',       
-                        filter_speckle=4,     # Remove sujeiras isoladas automáticas
+                        filter_speckle=4,     
                         corner_threshold=60  
                     )
                     
