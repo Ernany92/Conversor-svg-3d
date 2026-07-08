@@ -1,17 +1,19 @@
 import streamlit as st
 import vtracer
 import os
+import cv2
+import numpy as np
 from PIL import Image, ImageOps
 
 # Configuração da página do Streamlit
 st.set_page_config(page_title="Conversor SVG para Impressão 3D", page_icon="🖨️", layout="centered")
 
-def otimizar_imagem_universal(imagem_pil):
-    """Processa a imagem PIL diretamente na memória para isolar o conteúdo."""
+def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
+    """Processa a imagem PIL diretamente na memória, isola o fundo e ajusta a espessura das linhas."""
     img = imagem_pil.convert("RGBA")
     w, h = img.size
     
-    # Amostra os 4 cantos da imagem
+    # Amostra os 4 cantos da imagem para detecção de fundo
     cantos = [img.getpixel((0, 0)), img.getpixel((w-1, 0)), img.getpixel((0, h-1)), img.getpixel((w-1, h-1))]
     
     luminosidades = []
@@ -32,13 +34,26 @@ def otimizar_imagem_universal(imagem_pil):
         base.paste(img, (0, 0), img)
         imagem_final = base.convert("L")
     
-    # 🌟 CORREÇÃO CRÍTICA: Alterado de '1' para 'L' (Grayscale) para evitar o Segmentation Fault no Linux
-    imagem_binaria = imagem_final.point(lambda x: 0 if x < 140 else 255, 'L')
+    # Binarização utilizando o limiar (Threshold) dinâmico do controle deslizante
+    imagem_binaria = imagem_final.point(lambda x: 0 if x < thresh_val else 255, 'L')
     
-    # Força caminho absoluto para evitar problemas de permissão na nuvem
+    # Convertemos para matriz OpenCV (NumPy) para aplicar a morfologia matemática (ajuste de espessura)
+    img_np = np.array(imagem_binaria)
+    
+    if thickness > 0:
+        kernel = np.ones((thickness, thickness), np.uint8)
+        # Erodir o fundo branco faz as linhas pretas expandirem (engrossarem)
+        img_np = cv2.erode(img_np, kernel, iterations=1)
+    elif thickness < 0:
+        kernel = np.ones((abs(thickness), abs(thickness)), np.uint8)
+        # Dilatar o fundo branco faz as linhas pretas reduzirem (afinarem)
+        img_np = cv2.dilate(img_np, kernel, iterations=1)
+    
+    # Força caminho absoluto para salvar a imagem de transição limpa
     caminho_temp = os.path.abspath("temp_interface_processado.png")
-    imagem_binaria.save(caminho_temp)
-    return caminho_temp
+    cv2.imwrite(caminho_temp, img_np)
+    
+    return caminho_temp, img_np
 
 # --- INTERFACE GRÁFICA ---
 st.title("🖨️ Conversor SVG Inteligente para Impressão 3D")
@@ -50,6 +65,25 @@ arquivo_upload = st.file_uploader("Arraste ou selecione uma imagem (PNG, JPG, JP
 if arquivo_upload is not None:
     imagem_original = Image.open(arquivo_upload)
     
+    # --- PAINEL LATERAL DE AJUSTES EM TEMPO REAL ---
+    st.sidebar.header("🎛️ Controles do Traço")
+    st.sidebar.markdown("Modifique os parâmetros abaixo até que o traço na prévia fique perfeito para o Bambu Studio.")
+    
+    thresh_val = st.sidebar.slider(
+        "Definição das Bordas (Threshold)", 
+        0, 255, 140,
+        help="Ajusta o ponto de corte do contraste. Útil para eliminar sombras ou serrilhados do arquivo original."
+    )
+    
+    thickness = st.sidebar.slider(
+        "Grossura do Traço (Espessura)", 
+        -15, 15, 0,
+        help="Valores positivos engrossam linhas finas (evitando que sumam no fatiador). Valores negativos afinam traços muito unidos."
+    )
+    
+    # Executa o processamento em tempo real (atualiza a cada movimento do slider)
+    imagem_temporaria, img_preview = otimizar_imagem_universal(imagem_original, thresh_val, thickness)
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -57,24 +91,24 @@ if arquivo_upload is not None:
         st.image(imagem_original, use_container_width=True)
         
     with col2:
-        st.subheader("Processamento")
+        st.subheader("Prévia do Traço")
+        # Exibe em tempo real o traço binarizado e modificado
+        st.image(img_preview, caption="Como o Bambu Studio enxergará as linhas", use_container_width=True)
+        
         if st.button("🚀 Converter para SVG", use_container_width=True):
             with st.spinner("Vetorizando contornos..."):
                 try:
-                    # 1. Processa a imagem na memória
-                    imagem_temporaria = otimizar_imagem_universal(imagem_original)
-                    
-                    # 2. Define caminhos de saída absolutos
+                    # Define caminhos de saída absolutos
                     nome_original = os.path.splitext(arquivo_upload.name)[0]
                     caminho_svg_saida = os.path.abspath(f"{nome_original}_pronto_3d.svg")
                     
-                    # 3. Executa a vetorização do vtracer
+                    # Executa a vetorização do vtracer usando a imagem do preview ajustado
                     vtracer.convert_image_to_svg_py(
                         imagem_temporaria, 
                         caminho_svg_saida, 
                         colormode='binary',
                         mode='spline',       
-                        filter_speckle=4,     
+                        filter_speckle=4,     # Remove sujeiras isoladas automáticas
                         corner_threshold=60  
                     )
                     
@@ -93,9 +127,7 @@ if arquivo_upload is not None:
                         use_container_width=True
                     )
                     
-                    # Limpeza dos arquivos locais
-                    if os.path.exists(imagem_temporaria):
-                        os.remove(imagem_temporaria)
+                    # Limpeza apenas do SVG local gerado
                     if os.path.exists(caminho_svg_saida):
                         os.remove(caminho_svg_saida)
                         
