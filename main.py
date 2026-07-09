@@ -4,7 +4,7 @@ import os
 import cv2
 import numpy as np
 import base64
-import re
+import xml.etree.ElementTree as ET
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 
@@ -12,31 +12,53 @@ from PIL import Image, ImageOps
 st.set_page_config(page_title="Conversor SVG para Impressão 3D", page_icon="🖨️", layout="centered")
 
 def limpar_svg_para_fatiador(caminho_svg):
-    """Abre o arquivo SVG gerado e remove cirurgicamente qualquer quadro ou linha de fundo."""
+    """Abre o arquivo SVG e deleta cirurgicamente qualquer elemento que não seja o traço preto."""
     if not os.path.exists(caminho_svg):
         return
         
-    with open(caminho_svg, "r", encoding="utf-8") as f:
-        conteudo = f.read()
-    
-    # 🌟 REMOÇÃO CIRÚRGICA: Deleta a tag <rect> (o quadro do canvas) e paths brancos de fundo
-    # Isso garante que o fatiador veja APENAS as ilhas isoladas do logotipo preto.
-    conteudo_limpo = re.sub(r'<rect[^>]*>', '', conteudo)
-    conteudo_limpo = re.sub(r'<path[^>]*fill="#ffffff"[^>]*>', '', conteudo_limpo)
-    conteudo_limpo = re.sub(r'<path[^>]*fill="white"[^>]*>', '', conteudo_limpo)
-    conteudo_limpo = re.sub(r'<path[^>]*fill="#fff"[^>]*>', '', conteudo_limpo)
-    
-    with open(caminho_svg, "w", encoding="utf-8") as f:
-        f.write(conteudo_limpo)
+    try:
+        # Registra o namespace padrão do SVG para manter o arquivo limpo e compatível
+        ET.register_namespace('', "http://www.w3.org/2000/svg")
+        
+        tree = ET.parse(caminho_svg)
+        root = tree.getroot()
+        
+        para_remover = []
+        
+        # Faz uma varredura real na árvore de elementos do arquivo
+        for elem in root.iter():
+            tag_nome = elem.tag.split('}')[-1].lower()
+            
+            # Alvos geométricos que podem criar molduras indesejadas
+            if tag_nome in ['path', 'rect', 'polygon', 'circle', 'ellipse']:
+                fill = elem.get('fill', '').strip().lower()
+                style = elem.get('style', '').strip().lower()
+                
+                # Critério rígido: Só fica no arquivo se for o traço PRETO puro
+                eh_preto = (fill == '#000000' or fill == '#000') or ('fill:#000000' in style or 'fill:#000' in style)
+                
+                # Se não for preto, ou se for um container <rect>, vai para a lista de exclusão
+                if not eh_preto or tag_nome == 'rect':
+                    para_remover.append(elem)
+        
+        # Remove fisicamente os elementos indesejados de seus respectivos nós pais
+        for pai in root.iter():
+            for filho in list(pai):
+                if filho in para_remover:
+                    pai.remove(filho)
+                    
+        # Sobreescreve o SVG original totalmente limpo
+        tree.write(caminho_svg, encoding="utf-8", xml_declaration=True)
+        
+    except Exception as e:
+        st.error(f"Erro na faxina estrutural do SVG: {e}")
 
 def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
-    """Processa a imagem isolando o elemento em preto e limpando as extremidades."""
+    """Processa a imagem e força o logotipo em preto absoluto e o fundo em branco puro."""
     img = imagem_pil.convert("RGBA")
     w, h = img.size
     
-    # Amostra os 4 cantos da imagem para detecção inteligente de fundo
     cantos = [img.getpixel((0, 0)), img.getpixel((w-1, 0)), img.getpixel((0, h-1)), img.getpixel((w-1, h-1))]
-    
     luminosidades = []
     for c in cantos:
         if c[3] > 50:
@@ -55,19 +77,19 @@ def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
         base.paste(img, (0, 0), img)
         imagem_final = base.convert("L")
     
-    # Binarização: O que você quer vira PRETO (0) e o resto vira BRANCO (255)
+    # Binarização agressiva: Desenho vira PRETO (0) e o resto vira BRANCO (255)
     imagem_binaria = imagem_final.point(lambda x: 0 if x < thresh_val else 255, 'L')
     img_np = np.array(imagem_binaria)
     
-    # Ajuste de espessura morfológica baseada no traço preto
+    # Ajustes finos de espessura sobre o traço preto
     if thickness > 0:
         kernel = np.ones((thickness, thickness), np.uint8)
-        img_np = cv2.erode(img_np, kernel, iterations=1) # Engrossa o preto
+        img_np = cv2.erode(img_np, kernel, iterations=1) # Engrossa o traço preto
     elif thickness < 0:
         kernel = np.ones((abs(thickness), abs(thickness)), np.uint8)
-        img_np = cv2.dilate(img_np, kernel, iterations=1) # Afina o preto
+        img_np = cv2.dilate(img_np, kernel, iterations=1) # Afina o traço preto
     
-    # Barreira extra de segurança nas bordas absolutas
+    # Margem de isolamento nas bordas externas
     img_np[0:3, :] = 255
     img_np[-3:, :] = 255
     img_np[:, 0:3] = 255
@@ -101,7 +123,7 @@ if arquivo_upload is not None:
         
     with col2:
         st.subheader("Prévia do Traço")
-        st.caption("✨ Preto = O que será impresso | Branco = Totalmente ignorado")
+        st.caption("✨ Preto = O que será impresso | Branco = Totalmente deletado")
         
         _, buffer = cv2.imencode('.png', img_preview)
         img_base64 = base64.b64encode(buffer).decode('utf-8')
@@ -174,12 +196,12 @@ if arquivo_upload is not None:
         components.html(html_zoom_component, height=390)
         
         if st.button("🚀 Converter para SVG", use_container_width=True):
-            with st.spinner("Vetorizando e limpando arquivos de fundo..."):
+            with st.spinner("Vetorizando e aplicando faxina estrutural..."):
                 try:
                     nome_original = os.path.splitext(arquivo_upload.name)[0]
                     caminho_svg_saida = os.path.abspath(f"{nome_original}_pronto_3d.svg")
                     
-                    # 1. Executa a vetorização nativa do VTracer
+                    # 1. Vetorização padrão das formas
                     vtracer.convert_image_to_svg_py(
                         imagem_temporaria, 
                         caminho_svg_saida, 
@@ -190,13 +212,13 @@ if arquivo_upload is not None:
                         corner_threshold=60  
                     )
                     
-                    # 2. 🌟 ATUAÇÃO DIRETADA: Executa a faxina e deleta o quadro externo do código do SVG
+                    # 2. Executa a limpeza cirúrgica baseada em dados XML reais
                     limpar_svg_para_fatiador(caminho_svg_saida)
                     
                     with open(caminho_svg_saida, "rb") as f:
                         dados_svg = f.read()
                     
-                    st.success("✅ SVG Limpo Gerado com Sucesso!")
+                    st.success("✅ SVG Perfeito Gerado para o Slicer!")
                     
                     st.download_button(
                         label="📥 Baixar Arquivo SVG",
