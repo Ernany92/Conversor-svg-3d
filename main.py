@@ -4,18 +4,37 @@ import os
 import cv2
 import numpy as np
 import base64
+import re
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
 
 # Configuração da página do Streamlit
 st.set_page_config(page_title="Conversor SVG para Impressão 3D", page_icon="🖨️", layout="centered")
 
+def limpar_svg_para_fatiador(caminho_svg):
+    """Abre o arquivo SVG gerado e remove cirurgicamente qualquer quadro ou linha de fundo."""
+    if not os.path.exists(caminho_svg):
+        return
+        
+    with open(caminho_svg, "r", encoding="utf-8") as f:
+        conteudo = f.read()
+    
+    # 🌟 REMOÇÃO CIRÚRGICA: Deleta a tag <rect> (o quadro do canvas) e paths brancos de fundo
+    # Isso garante que o fatiador veja APENAS as ilhas isoladas do logotipo preto.
+    conteudo_limpo = re.sub(r'<rect[^>]*>', '', conteudo)
+    conteudo_limpo = re.sub(r'<path[^>]*fill="#ffffff"[^>]*>', '', conteudo_limpo)
+    conteudo_limpo = re.sub(r'<path[^>]*fill="white"[^>]*>', '', conteudo_limpo)
+    conteudo_limpo = re.sub(r'<path[^>]*fill="#fff"[^>]*>', '', conteudo_limpo)
+    
+    with open(caminho_svg, "w", encoding="utf-8") as f:
+        f.write(conteudo_limpo)
+
 def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
-    """Processa a imagem PIL diretamente na memória, isola o fundo e ajusta a espessura das linhas."""
+    """Processa a imagem isolando o elemento em preto e limpando as extremidades."""
     img = imagem_pil.convert("RGBA")
     w, h = img.size
     
-    # Amostra os 4 cantos da imagem para detecção de fundo
+    # Amostra os 4 cantos da imagem para detecção inteligente de fundo
     cantos = [img.getpixel((0, 0)), img.getpixel((w-1, 0)), img.getpixel((0, h-1)), img.getpixel((w-1, h-1))]
     
     luminosidades = []
@@ -36,22 +55,24 @@ def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
         base.paste(img, (0, 0), img)
         imagem_final = base.convert("L")
     
-    # 🌟 CORREÇÃO CRÍTICA: O objeto agora se torna BRANCO (255) e o fundo se torna PRETO (0)
-    # Isso evita que o VTracer crie a moldura quadrada gigante ao redor do desenho no fatiador.
-    imagem_binaria = imagem_final.point(lambda x: 255 if x < thresh_val else 0, 'L')
-    
-    # Convertemos para matriz OpenCV (NumPy) para aplicar a morfologia matemática
+    # Binarização: O que você quer vira PRETO (0) e o resto vira BRANCO (255)
+    imagem_binaria = imagem_final.point(lambda x: 0 if x < thresh_val else 255, 'L')
     img_np = np.array(imagem_binaria)
     
-    # Ajuste dos operadores morfológicos para trabalhar com o objeto sendo Branco (255)
+    # Ajuste de espessura morfológica baseada no traço preto
     if thickness > 0:
         kernel = np.ones((thickness, thickness), np.uint8)
-        img_np = cv2.dilate(img_np, kernel, iterations=1) # Dilatar aumenta o branco (engrossa o traço)
+        img_np = cv2.erode(img_np, kernel, iterations=1) # Engrossa o preto
     elif thickness < 0:
         kernel = np.ones((abs(thickness), abs(thickness)), np.uint8)
-        img_np = cv2.erode(img_np, kernel, iterations=1)  # Erodir diminui o branco (afina o traço)
+        img_np = cv2.dilate(img_np, kernel, iterations=1) # Afina o preto
     
-    # Força caminho absoluto para salvar a imagem de transição limpa
+    # Barreira extra de segurança nas bordas absolutas
+    img_np[0:3, :] = 255
+    img_np[-3:, :] = 255
+    img_np[:, 0:3] = 255
+    img_np[:, -3:] = 255
+    
     caminho_temp = os.path.abspath("temp_interface_processado.png")
     cv2.imwrite(caminho_temp, img_np)
     
@@ -59,31 +80,17 @@ def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
 
 # --- INTERFACE GRÁFICA ---
 st.title("🖨️ Conversor SVG Inteligente para Impressão 3D")
-st.write("Transforme qualquer logotipo ou texto em um SVG limpo, sem blocos quadrados de fundo.")
+st.write("Focado estritamente no seu desenho. Livre de molduras quadradas de fundo.")
 
-# Componente de Upload de arquivo
 arquivo_upload = st.file_uploader("Arraste ou selecione uma imagem (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
 
 if arquivo_upload is not None:
     imagem_original = Image.open(arquivo_upload)
     
-    # --- PAINEL LATERAL DE AJUSTES EM TEMPO REAL ---
     st.sidebar.header("🎛️ Controles do Traço")
-    st.sidebar.markdown("Modifique os parâmetros abaixo até que o traço na prévia fique perfeito para o Bambu Studio.")
+    thresh_val = st.sidebar.slider("Definição das Bordas (Threshold)", 0, 255, 140)
+    thickness = st.sidebar.slider("Grossura do Traço (Espessura)", -15, 15, 0)
     
-    thresh_val = st.sidebar.slider(
-        "Definição das Bordas (Threshold)", 
-        0, 255, 140,
-        help="Ajusta o ponto de corte do contraste. Útil para eliminar sombras ou serrilhados do arquivo original."
-    )
-    
-    thickness = st.sidebar.slider(
-        "Grossura do Traço (Espessura)", 
-        -15, 15, 0,
-        help="Valores positivos engrossam linhas finas (evitando que sumam no fatiador). Valores negativos afinam traços muito unidos."
-    )
-    
-    # Executa o processamento em tempo real (atualiza a cada movimento do slider)
     imagem_temporaria, img_preview = otimizar_imagem_universal(imagem_original, thresh_val, thickness)
     
     col1, col2 = st.columns(2)
@@ -94,9 +101,8 @@ if arquivo_upload is not None:
         
     with col2:
         st.subheader("Prévia do Traço")
-        st.caption("✨ Branco = Material Impresso | Preto = Espaço Vazio da Mesa")
+        st.caption("✨ Preto = O que será impresso | Branco = Totalmente ignorado")
         
-        # LÓGICA DA LUPA (CONVERSÃO BASE64 + HTML/JS INJETADO)
         _, buffer = cv2.imencode('.png', img_preview)
         img_base64 = base64.b64encode(buffer).decode('utf-8')
         
@@ -110,7 +116,7 @@ if arquivo_upload is not None:
             display: flex; 
             align-items: center; 
             justify-content: center; 
-            background: #1A1A1A; 
+            background: #F5F5F5; 
             cursor: grab;
             user-select: none;
         ">
@@ -168,30 +174,30 @@ if arquivo_upload is not None:
         components.html(html_zoom_component, height=390)
         
         if st.button("🚀 Converter para SVG", use_container_width=True):
-            with st.spinner("Vetorizando contornos..."):
+            with st.spinner("Vetorizando e limpando arquivos de fundo..."):
                 try:
-                    # Define caminhos de saída absolutos
                     nome_original = os.path.splitext(arquivo_upload.name)[0]
                     caminho_svg_saida = os.path.abspath(f"{nome_original}_pronto_3d.svg")
                     
-                    # Executa a vetorização do vtracer usando a imagem do preview ajustado
+                    # 1. Executa a vetorização nativa do VTracer
                     vtracer.convert_image_to_svg_py(
                         imagem_temporaria, 
                         caminho_svg_saida, 
                         colormode='binary',
                         mode='spline',       
-                        hierarchical='cutout', # 🌟 ALTERAÇÃO CRÍTICA: Garante vazados perfeitos em letras e furos
+                        hierarchical='cutout',
                         filter_speckle=4,     
                         corner_threshold=60  
                     )
                     
-                    # Lendo o arquivo gerado
+                    # 2. 🌟 ATUAÇÃO DIRETADA: Executa a faxina e deleta o quadro externo do código do SVG
+                    limpar_svg_para_fatiador(caminho_svg_saida)
+                    
                     with open(caminho_svg_saida, "rb") as f:
                         dados_svg = f.read()
                     
-                    st.success("✅ SVG Gerado com Sucesso!")
+                    st.success("✅ SVG Limpo Gerado com Sucesso!")
                     
-                    # Botão nativo de download
                     st.download_button(
                         label="📥 Baixar Arquivo SVG",
                         data=dados_svg,
@@ -200,7 +206,6 @@ if arquivo_upload is not None:
                         use_container_width=True
                     )
                     
-                    # Limpeza apenas do SVG local gerado
                     if os.path.exists(caminho_svg_saida):
                         os.remove(caminho_svg_saida)
                         
