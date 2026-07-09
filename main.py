@@ -36,18 +36,20 @@ def otimizar_imagem_universal(imagem_pil, thresh_val, thickness):
         base.paste(img, (0, 0), img)
         imagem_final = base.convert("L")
     
-    # Binarização utilizando o limiar (Threshold) dinâmico do controle deslizante
-    imagem_binaria = imagem_final.point(lambda x: 0 if x < thresh_val else 255, 'L')
+    # 🌟 CORREÇÃO CRÍTICA: O objeto agora se torna BRANCO (255) e o fundo se torna PRETO (0)
+    # Isso evita que o VTracer crie a moldura quadrada gigante ao redor do desenho no fatiador.
+    imagem_binaria = imagem_final.point(lambda x: 255 if x < thresh_val else 0, 'L')
     
-    # Convertemos para matriz OpenCV (NumPy) para aplicar a morfologia matemática (ajuste de espessura)
+    # Convertemos para matriz OpenCV (NumPy) para aplicar a morfologia matemática
     img_np = np.array(imagem_binaria)
     
+    # Ajuste dos operadores morfológicos para trabalhar com o objeto sendo Branco (255)
     if thickness > 0:
         kernel = np.ones((thickness, thickness), np.uint8)
-        img_np = cv2.erode(img_np, kernel, iterations=1)
+        img_np = cv2.dilate(img_np, kernel, iterations=1) # Dilatar aumenta o branco (engrossa o traço)
     elif thickness < 0:
         kernel = np.ones((abs(thickness), abs(thickness)), np.uint8)
-        img_np = cv2.dilate(img_np, kernel, iterations=1)
+        img_np = cv2.erode(img_np, kernel, iterations=1)  # Erodir diminui o branco (afina o traço)
     
     # Força caminho absoluto para salvar a imagem de transição limpa
     caminho_temp = os.path.abspath("temp_interface_processado.png")
@@ -60,7 +62,7 @@ st.title("🖨️ Conversor SVG Inteligente para Impressão 3D")
 st.write("Transforme qualquer logotipo ou texto em um SVG limpo, sem blocos quadrados de fundo.")
 
 # Componente de Upload de arquivo
-arquivo_upload = st.file_uploader("Arraste ou seleciona uma imagem (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
+arquivo_upload = st.file_uploader("Arraste ou selecione uma imagem (PNG, JPG, JPEG)", type=["png", "jpg", "jpeg"])
 
 if arquivo_upload is not None:
     imagem_original = Image.open(arquivo_upload)
@@ -92,8 +94,9 @@ if arquivo_upload is not None:
         
     with col2:
         st.subheader("Prévia do Traço")
+        st.caption("✨ Branco = Material Impresso | Preto = Espaço Vazio da Mesa")
         
-        # 🌟 LOGICA DA LUPA (CONVERSÃO BASE64 + HTML/JS INJETADO)
+        # LÓGICA DA LUPA (CONVERSÃO BASE64 + HTML/JS INJETADO)
         _, buffer = cv2.imencode('.png', img_preview)
         img_base64 = base64.b64encode(buffer).decode('utf-8')
         
@@ -129,20 +132,18 @@ if arquivo_upload is not None:
             let startX = 0, startY = 0;
             let translateX = 0, translateY = 0;
 
-            // 1. Zoom Interativo por Rolagem do Mouse (Scroll Wheel)
             container.addEventListener('wheel', (e) => {{
                 e.preventDefault();
                 const intensidadeZoom = 0.15;
                 if (e.deltaY < 0) {{
-                    scale += intensidadeZoom; // Zoom In
+                    scale += intensidadeZoom;
                 }} else {{
-                    scale -= intensidadeZoom; // Zoom Out
+                    scale -= intensidadeZoom;
                 }}
-                scale = Math.min(Math.max(0.5, scale), 15); // Trava o zoom entre 0.5x e 15x
+                scale = Math.min(Math.max(0.5, scale), 15);
                 img.style.transform = `translate(${{translateX}}px, ${{translateY}}px) scale(${{scale}})`;
             }}, {{ passive: false }});
 
-            // 2. Sistema de Pan (Clique e arraste para navegar no desenho ampliado)
             container.addEventListener('mousedown', (e) => {{
                 isDragging = true;
                 container.style.cursor = 'grabbing';
@@ -164,7 +165,6 @@ if arquivo_upload is not None:
             }});
         </script>
         """
-        # Renderiza a lousa interativa com altura controlada
         components.html(html_zoom_component, height=390)
         
         if st.button("🚀 Converter para SVG", use_container_width=True):
@@ -180,6 +180,7 @@ if arquivo_upload is not None:
                         caminho_svg_saida, 
                         colormode='binary',
                         mode='spline',       
+                        hierarchical='cutout', # 🌟 ALTERAÇÃO CRÍTICA: Garante vazados perfeitos em letras e furos
                         filter_speckle=4,     
                         corner_threshold=60  
                     )
